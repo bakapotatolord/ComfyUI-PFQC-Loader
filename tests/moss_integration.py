@@ -8,6 +8,7 @@ import importlib
 import json
 import os
 from pathlib import Path
+from statistics import median
 import sys
 from time import perf_counter
 from unittest.mock import patch
@@ -22,6 +23,7 @@ def main():
     parser.add_argument("comfy", type=Path, help="Installed ComfyUI directory")
     parser.add_argument("checkpoint", type=Path)
     parser.add_argument("--verify-reference", type=Path, help="Only compare decoded tensors to this checkpoint")
+    parser.add_argument("--benchmark-checksums", action="store_true", help="Time CPU reconstruction with and without SHA-256")
     parser.add_argument("--load-only", action="store_true")
     parser.add_argument("--image", type=Path, help="Save the final generated image as PNG")
     parser.add_argument("--runs", type=int, default=3)
@@ -32,6 +34,9 @@ def main():
         parser.error("--runs must include one warmup and at least one warmed run")
     args.comfy = args.comfy.resolve()
     args.checkpoint = args.checkpoint.resolve()
+    if args.benchmark_checksums:
+        benchmark_checksums(args.checkpoint, args.runs)
+        return
     if args.verify_reference:
         verify_reference(args.checkpoint, args.verify_reference)
         return
@@ -180,16 +185,45 @@ def main():
         print(json.dumps(report, indent=2), flush=True)
 
 
-def verify_reference(path, reference):
-    from safetensors import safe_open
-    import torch
-
+def import_decoder():
     spec = importlib.util.spec_from_file_location(
-        "pfqc_reference_check", ROOT / "loader.py", submodule_search_locations=[str(ROOT)],
+        "pfqc_decode_check", ROOT / "loader.py", submodule_search_locations=[str(ROOT)],
     )
     loader = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = loader
     spec.loader.exec_module(loader)
+    return loader
+
+
+def benchmark_checksums(path, runs):
+    loader = import_decoder()
+    timings = {True: [], False: []}
+    for run in range(runs):
+        order = (True, False) if run % 2 == 0 else (False, True)
+        for verify_checksums in order:
+            started = perf_counter()
+            tensors, _ = loader.decode_checkpoint(path, verify_checksums=verify_checksums)
+            elapsed = perf_counter() - started
+            timings[verify_checksums].append(elapsed)
+            print(json.dumps({
+                "pair": run + 1,
+                "verify_checksums": verify_checksums,
+                "decode_s": elapsed,
+                "tensor_count": len(tensors),
+            }), flush=True)
+            del tensors
+            gc.collect()
+    print(json.dumps({
+        "verified_median_s": median(timings[True]),
+        "unchecked_median_s": median(timings[False]),
+    }), flush=True)
+
+
+def verify_reference(path, reference):
+    from safetensors import safe_open
+    import torch
+
+    loader = import_decoder()
     actual, metadata = loader.decode_checkpoint(path)
     with safe_open(reference, framework="pt", device="cpu") as expected:
         assert metadata == expected.metadata()

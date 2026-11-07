@@ -6,7 +6,7 @@ The compressor writes schema 1 to the safetensors metadata key `potatoforge_quan
 
 The physical tensor keys match the original names. Encoded weights store a raw DEFLATE stream as a U8 vector. The decoder restores that stream as a row-major signed INT8 matrix. Stored tensors keep their safetensors dtype and shape. These include FP32 row scales, U8 `.comfy_quant` markers with ConvRot settings, higher-precision tensors, and unsupported families carried through by the compressor. Where compression fits a weight and scale pair, the archive stores the final codes and final FP32 scales.
 
-The loader bundles the compressor's `open_archive`, `validate_families`, and `chunks` APIs. The shared decoder validates the manifest, physical tensor references, quantization families, bounded streams, decoded sizes, and hashes. Stored tensors are mapped by safetensors and checked against the recorded hashes. The original BF16 model and external compression settings are unnecessary.
+The loader bundles the compressor's `open_archive`, `validate_families`, and `chunks` APIs. The shared decoder validates the manifest, physical tensor references, quantization families, bounded streams, and decoded sizes. Stored tensors are mapped by safetensors. SHA-256 comparison is optional in the decoder and disabled by default in ComfyUI. The original BF16 model and external compression settings are unnecessary.
 
 ComfyUI 0.43.0 accepts the completed dictionary through `comfy.sd.load_diffusion_model_state_dict(sd, model_options={}, metadata=None, disable_dynamic=False)`. The loader passes the original metadata and registers the same style of `cached_patcher_init` factory as the built-in loader. Encoded tensors occupy RAM after reconstruction. Ordinary checkpoints can keep their INT8 weights file-backed and use ComfyUI's fast-disk path. The PFQC model still uses ComfyUI's native CPU/VRAM placement and dynamic offloading.
 
@@ -33,7 +33,7 @@ Run the harness once per checkpoint with ComfyUI's Python, passing the same inst
 
 The harness uses the local MOSS workflow's Qwen 3.5 4B INT8 ConvRot encoder, 4B-to-9B adapter, Flux 2 small VAE, and MOSS four-step speed LoRA at strength 1. It disables the workflow's stylistic LoRAs and fixes resolution to 512 × 768, seed to 433126007329043, and sampling to four Euler steps with the simple scheduler, CFG 1, and denoise 1 for all paths. Each run uses the same prompt and seeded noise. Generation timing starts with prepared conditioning and includes VAE decode. The harness records two warmed runs after the first generation and emits latent and image hashes for comparison.
 
-## Results on GTX 1660 Super
+## Original results with SHA-256 enabled
 
 Measured on Windows 11 with an i5-12400, 32 GB RAM, and a GTX 1660 Super with 6 GiB VRAM. ComfyUI 0.43.0 (commit `426f5eea52a7ece1dd599fff4cb6cd1f352ddd24`) used PyTorch 2.12.0+cu130, comfy-kitchen 0.2.40, and comfy-aimdo 0.6.0.
 
@@ -63,3 +63,18 @@ The bundled decoder was also tested from the installed custom-node folder. It lo
 Both paths loaded native `TensorWiseINT8Layout` with ConvRot group size 256 and dispatched `int8_linear` through `comfy_kitchen.backends.cuda`. The model-only speed LoRA cloned and patched the native model. ComfyUI kept part of the model in VRAM and offloaded the rest to CPU. The direct path decoded once across all three generations and once more when the reload factory created a fresh model after unload.
 
 Direct PFQC averaged 16.00 s warm, compared with 14.67 s for the standalone reconstruction and 16.30 s for the original. The two standard loads used ComfyUI's fast-disk policy, while direct PFQC used its RAM offload policy. The fast-disk reference also kept about 350 MiB more model weights resident in VRAM during its warm runs than direct PFQC. With `--disable-fast-disk`, the standalone reference took 17.47 and 15.15 s warm and kept the same image hashes. Direct PFQC fell within the range of the standard-loader runs. The comparison shows sensitivity to ComfyUI's offload policy and GPU residency, with identical CUDA INT8 dispatch and zero decoder calls during sampling.
+
+## Effect of skipping SHA-256 during reconstruction
+
+Both modes reconstructed all 757 tensors from the same 4.61 GiB MOSS archive. The benchmark used portable ComfyUI's Python, the serial decoder, and normal Windows file caching. It alternated the mode order across two pairs in one process. The timer covers CPU state-dict reconstruction. Stored tensors stay memory-mapped, so some page reads can move to later use when SHA-256 is skipped.
+
+| Mode | Pair 1 | Pair 2 | Median |
+| --- | ---: | ---: | ---: |
+| SHA-256 enabled | 34.23 s | 33.34 s | 33.78 s |
+| SHA-256 skipped | 23.66 s | 23.04 s | 23.35 s |
+
+Skipping SHA-256 reduced reconstruction time by **10.43 s (30.9%)** in this comparison. Both modes use the same manifest, tensor-size, and DEFLATE validation. A separate smoke test of the installed node loaded native MOSS INT8 ConvRot in 25.07 s, including 24.84 s of reconstruction.
+
+```powershell
+& $comfyPython -B tests/moss_integration.py $comfyRoot $pfqcArchive --benchmark-checksums --runs 2
+```

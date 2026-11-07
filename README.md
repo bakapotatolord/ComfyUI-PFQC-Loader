@@ -25,6 +25,8 @@ PFQC can change quantized weight codes and scales during compression. For a load
 
 The loader validates the manifest and streams encoded weights into their final CPU tensor buffers, one tensor at a time. Stored tensors are read through safetensors. ComfyUI receives a complete state dictionary, so leave enough system RAM for the reconstructed weights and the rest of the workflow. The archive is never expanded to a temporary checkpoint during loading.
 
+Routine loading skips SHA-256 comparison. It still validates the archive structure, tensor sizes, and DEFLATE streams. Run `pf-compress verify` for a full integrity check, or pass `verify_checksums=True` to the loader's Python `decode_checkpoint` function. Corruption that preserves the archive structure and decoded sizes can pass a routine load.
+
 Decoding happens when the model object is created. Denoising, LoRA patching, and offloading use ComfyUI's native model and patcher. If ComfyUI needs a fresh patcher, the reload recipe opens and decodes the archive again.
 
 ## Troubleshooting
@@ -45,4 +47,4 @@ Run `python -m unittest discover -s tests` with PyTorch and the pinned compresso
 
 ## Updating the bundled decoder
 
-The bundle comes from `potatoforge-quant-compress` commit `fa8107338fbb64712bb8f577bf4cc93dd4220dfd`. Make decoder changes there, then copy `decoder.py`, `formats.py`, and `safetensors_io.py` from its `src/pf_quant_compress` directory into `_pfqc_decoder` and update the pin. The unit tests check that the copies match the canonical source.
+The bundle comes from `potatoforge-quant-compress` commit `68f2e718b3a6f8a74f4f2e1f70cf80efc011b71e`. Make decoder changes there, then copy `decoder.py`, `formats.py`, and `safetensors_io.py` from its `src/pf_quant_compress` directory into `_pfqc_decoder` and update the pin. The unit tests check that the copies match the canonical source.

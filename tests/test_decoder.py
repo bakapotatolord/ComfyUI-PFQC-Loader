@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 from pf_quant_compress import decoder as canonical_decoder
@@ -76,17 +77,27 @@ class DecoderTests(unittest.TestCase):
             self.assertEqual(archive.records[WEIGHT]["codec"], "deflate")
             self.assertEqual(archive.records[WEIGHT]["storage"], "optimized_int8")
 
-        actual, metadata = decode_checkpoint(self.archive)
-        with safe_open(self.restored, framework="pt", device="cpu") as expected:
-            self.assertEqual(metadata, expected.metadata())
-            self.assertEqual(set(actual), set(expected.keys()))
-            for name, tensor in actual.items():
-                with self.subTest(name=name):
-                    reference = expected.get_tensor(name)
-                    self.assertEqual(tensor.device.type, "cpu")
-                    self.assertEqual(tensor.shape, reference.shape)
-                    self.assertEqual(tensor.dtype, reference.dtype)
-                    self.assertEqual(raw_tensor(tensor), raw_tensor(reference))
+        for verify_checksums in (False, True):
+            actual, metadata = decode_checkpoint(self.archive, verify_checksums=verify_checksums)
+            with safe_open(self.restored, framework="pt", device="cpu") as expected:
+                self.assertEqual(metadata, expected.metadata())
+                self.assertEqual(set(actual), set(expected.keys()))
+                for name, tensor in actual.items():
+                    with self.subTest(name=name, verify_checksums=verify_checksums):
+                        reference = expected.get_tensor(name)
+                        self.assertEqual(tensor.device.type, "cpu")
+                        self.assertEqual(tensor.shape, reference.shape)
+                        self.assertEqual(tensor.dtype, reference.dtype)
+                        self.assertEqual(raw_tensor(tensor), raw_tensor(reference))
+
+    def test_default_decode_never_calls_sha256(self):
+        bundled = sys.modules[spec.name + "._pfqc_decoder.decoder"]
+        with (
+            patch.object(loader, "sha256", side_effect=AssertionError("hashed a stored tensor")),
+            patch.object(bundled, "sha256", side_effect=AssertionError("hashed a decoded stream")),
+        ):
+            tensors, _ = decode_checkpoint(self.archive)
+        self.assertIn(WEIGHT, tensors)
 
     def test_missing_pfqc_manifest(self):
         with self.assertRaisesRegex(ValueError, "Missing PFQC compression metadata"):
@@ -128,8 +139,14 @@ class DecoderTests(unittest.TestCase):
                 raw_header += b" " * (-len(raw_header) % 8)
                 broken = self.directory / f"{issue}.pfqc.safetensors"
                 broken.write_bytes(len(raw_header).to_bytes(8, "little") + raw_header + edited)
-                with self.assertRaisesRegex(ValueError, message):
+                if issue == "stored":
                     decode_checkpoint(broken)
+                    with self.assertRaisesRegex(ValueError, message):
+                        decode_checkpoint(broken, verify_checksums=True)
+                else:
+                    for verify_checksums in (False, True):
+                        with self.subTest(verify_checksums=verify_checksums), self.assertRaisesRegex(ValueError, message):
+                            decode_checkpoint(broken, verify_checksums=verify_checksums)
 
 
 if __name__ == "__main__":

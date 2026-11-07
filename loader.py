@@ -8,9 +8,12 @@ import torch
 from ._pfqc_decoder.decoder import open_archive
 
 
-def decode_checkpoint(path):
+def decode_checkpoint(path, *, verify_checksums=False):
     """Reconstruct a PFQC v1 archive as CPU tensors and original metadata."""
-    with open_archive(path) as archive, safe_open(path, framework="pt", device="cpu") as stored:
+    with (
+        open_archive(path, verify_checksums=verify_checksums) as archive,
+        safe_open(path, framework="pt", device="cpu") as stored,
+    ):
         archive.validate_families()
         state_dict = {}
         for name, info in archive.tensors.items():
@@ -19,11 +22,11 @@ def decode_checkpoint(path):
                 physical = stored.get_slice(name)
                 if physical.get_dtype() != info.dtype or tuple(physical.get_shape()) != info.shape:
                     raise ValueError(f"Stored tensor metadata does not match for {name!r}")
-                # Validate the bytes ComfyUI will receive without copying the mapped tensor.
                 tensor = stored.get_tensor(name)
-                raw = tensor.reshape(-1).view(torch.uint8).numpy()
-                if sha256(raw).hexdigest() != record["sha256"]:
-                    raise ValueError(f"Checksum mismatch for {name!r}")
+                if verify_checksums:
+                    raw = tensor.reshape(-1).view(torch.uint8).numpy()
+                    if sha256(raw).hexdigest() != record["sha256"]:
+                        raise ValueError(f"Checksum mismatch for {name!r}")
             else:
                 tensor = torch.empty(info.shape, dtype=torch.int8, device="cpu")
                 buffer = memoryview(tensor.numpy()).cast("B")
