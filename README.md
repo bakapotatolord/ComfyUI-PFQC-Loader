@@ -6,6 +6,8 @@
 
 The loader supports PFQC schema **1**, written by `potatoforge-quant-compress` **0.1.0**. It bundles the compressor's decoder for raw DEFLATE INT8 ConvRot weights and passes stored tensors through with their original bytes, including FP32 row scales, `.comfy_quant` markers, and higher-precision tensors. ComfyUI determines whether it can execute the resulting model and quantization formats. The primary model is MOSS Image SFT INT8 ConvRot.
 
+Archives made with `pf-compress compress --wide-grid` need this updated decoder when a selected multiplier exceeds 2×. Update the installed loader and restart ComfyUI before loading those archives.
+
 The loader uses the native state-dictionary loading and patcher APIs in ComfyUI 0.43.0. Use a ComfyUI build with native support for your checkpoint's quantization and model architecture.
 
 ## Install
@@ -49,4 +51,4 @@ Run `python -m unittest discover -s tests` with PyTorch and the pinned compresso
 
 ## Updating the bundled decoder
 
-The bundle comes from `potatoforge-quant-compress` commit `86a1c2465b0b0d2bf52960049a52d0d4533477cc`. Make decoder changes there, then copy `decoder.py`, `formats.py`, `safetensors_io.py`, `native.py`, and `_vendor/libdeflate-win-x64` from its `src/pf_quant_compress` directory into `_pfqc_decoder` and update the pin. The unit tests check that the copies match the canonical source.
+The bundle comes from `potatoforge-quant-compress` commit `7f0ca0fb8ea783287278b710f20810a028c96447`. Make decoder changes there, then copy `decoder.py`, `formats.py`, `safetensors_io.py`, `native.py`, and `_vendor/libdeflate-win-x64` from its `src/pf_quant_compress` directory into `_pfqc_decoder` and update the pin. The unit tests check that the copies match the canonical source.

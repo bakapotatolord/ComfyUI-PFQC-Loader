@@ -103,6 +103,25 @@ class DecoderTests(unittest.TestCase):
             tensors, _ = decode_checkpoint(self.archive, verify_checksums=False)
         self.assertIn(WEIGHT, tensors)
 
+    def test_loads_a_wide_grid_archive(self):
+        wide = self.directory / "wide.pfqc.safetensors"
+        restored = self.directory / "wide-restored.safetensors"
+        self.assertEqual(pf_compress([
+            "compress", str(self.source), "--target-bpw", "4.3", "--max-error", "0.015",
+            "--wide-grid", "--output", str(wide),
+        ]), 0)
+        with open_archive(wide) as archive:
+            fit = archive.report()["families"][0]
+            self.assertGreater(fit["multiplier"], 2.0)
+            self.assertFalse(fit["rate_target_missed"])
+        self.assertEqual(pf_compress(["decompress", str(wide), "--output", str(restored)]), 0)
+        actual, metadata = decode_checkpoint(wide)
+        with safe_open(restored, framework="pt", device="cpu") as expected:
+            self.assertEqual(metadata, expected.metadata())
+            self.assertEqual(set(actual), set(expected.keys()))
+            for name, tensor in actual.items():
+                self.assertEqual(raw_tensor(tensor), raw_tensor(expected.get_tensor(name)))
+
     def test_worker_is_joined_after_decode_error(self):
         bundled = sys.modules[spec.name + "._pfqc_decoder.decoder"]
         workers = []
