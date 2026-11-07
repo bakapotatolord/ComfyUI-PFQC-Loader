@@ -4,9 +4,9 @@
 
 ## Compatibility
 
-The loader supports PFQC schema **1**, written by `potatoforge-quant-compress` **0.1.0**. It bundles the compressor's decoder for raw DEFLATE INT8 ConvRot weights and passes stored tensors through with their original bytes, including FP32 row scales, `.comfy_quant` markers, and higher-precision tensors. ComfyUI determines whether it can execute the resulting model and quantization formats. The primary model is MOSS Image SFT INT8 ConvRot.
+The loader supports PFQC schemas **1 and 2**. It bundles the compressor's decoder for raw DEFLATE INT8 ConvRot weights and passes stored tensors through with their original bytes, including FP32 row scales, `.comfy_quant` markers, and higher-precision tensors. ComfyUI determines whether it can execute the resulting model and quantization formats. The primary model is MOSS Image SFT INT8 ConvRot.
 
-Archives made with `pf-compress compress --wide-grid` need this updated decoder when a selected multiplier exceeds 2×. Update the installed loader and restart ComfyUI before loading those archives.
+The compressor writes schema v2 when an experimental fit selects a multiplier above 2×. Update the installed loader and restart ComfyUI before loading v2 archives. This decoder also opens experimental v1 archives created with earlier wide-grid builds.
 
 The loader uses the native state-dictionary loading and patcher APIs in ComfyUI 0.43.0. Use a ComfyUI build with native support for your checkpoint's quantization and model architecture.
 
@@ -39,7 +39,7 @@ Decoding happens when the model object is created. Denoising, LoRA patching, and
 | --- | --- |
 | Empty model list | Confirm the exact `.pfqc.safetensors` suffix and that the file is in a registered `diffusion_models` directory. |
 | Missing PFQC metadata | Select a PFQC archive. Renaming an ordinary safetensors file does not make it a PFQC archive. |
-| Unsupported schema or codec | Check the archive's writer version. This loader supports schema 1 with `stored` and `deflate` codecs. |
+| Unsupported schema or codec | Check the archive's writer version. This loader supports schemas 1 and 2 with `stored` and `deflate` codecs. |
 | Checksum or stream error | Run `pf-compress verify` on the archive to check its integrity. |
 | ComfyUI cannot detect the model | Confirm the archive was made from a diffusion checkpoint supported by your ComfyUI build. |
 
@@ -51,4 +51,4 @@ Run `python -m unittest discover -s tests` with PyTorch and the pinned compresso
 
 ## Updating the bundled decoder
 
-The bundle comes from `potatoforge-quant-compress` commit `7f0ca0fb8ea783287278b710f20810a028c96447`. Make decoder changes there, then copy `decoder.py`, `formats.py`, `safetensors_io.py`, `native.py`, and `_vendor/libdeflate-win-x64` from its `src/pf_quant_compress` directory into `_pfqc_decoder` and update the pin. The unit tests check that the copies match the canonical source.
+The bundle comes from `potatoforge-quant-compress` commit `985af01454e3a8029ba852cc4fb20c985691482d`. Make decoder changes there, then copy `decoder.py`, `formats.py`, `safetensors_io.py`, `native.py`, and `_vendor/libdeflate-win-x64` from its `src/pf_quant_compress` directory into `_pfqc_decoder` and update the pin. The unit tests check that the copies match the canonical source.

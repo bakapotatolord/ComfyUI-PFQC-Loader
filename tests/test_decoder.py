@@ -111,6 +111,7 @@ class DecoderTests(unittest.TestCase):
             "--wide-grid", "--output", str(wide),
         ]), 0)
         with open_archive(wide) as archive:
+            self.assertEqual(archive.manifest["schema_version"], 2)
             fit = archive.report()["families"][0]
             self.assertGreater(fit["multiplier"], 2.0)
             self.assertFalse(fit["rate_target_missed"])
@@ -157,7 +158,7 @@ class DecoderTests(unittest.TestCase):
                 record = next(item for item in manifest["tensors"] if item["name"] == WEIGHT)
                 edited = bytearray(payload)
                 if issue == "version":
-                    manifest["schema_version"] = 2
+                    manifest["schema_version"] = 3
                 elif issue == "codec":
                     record["codec"] = "unknown"
                 elif issue == "tensor":

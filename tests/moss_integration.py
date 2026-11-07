@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 NODE_ID = "LoadDiffusionModelPFQC"
+DEFAULT_PROMPT = "a latina boxer woman has large eyes and wide smile, jumping"
 
 
 def main():
@@ -28,6 +29,7 @@ def main():
     parser.add_argument("--node-dir", type=Path, default=ROOT, help="Custom-node checkout or installed directory to test")
     parser.add_argument("--warm-cache", action="store_true", help="Read the checkpoint before timing model load")
     parser.add_argument("--image", type=Path, help="Save the final generated image as PNG")
+    parser.add_argument("--prompt", default=DEFAULT_PROMPT, help="Prompt for a matched image-quality run")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--legacy-offload", action="store_true")
     parser.add_argument("--disable-fast-disk", action="store_true", help="Compare ComfyUI's RAM offload policy")
@@ -125,7 +127,8 @@ def main():
         clip, = nodes.CLIPLoader().load_clip("Qwen3.5-4B_int8_convrot.safetensors", "moss_image")
         adapter_name = str(Path("4B") / "moss_qwen35_4b_to_9b_1600_train_mlp2048.safetensors")
         clip, = adapter.apply(clip, adapter_name)
-        positive, = nodes.CLIPTextEncode().encode(clip, "a latina boxer woman has large eyes and wide smile, jumping")
+        positive, = nodes.CLIPTextEncode().encode(clip, args.prompt)
+        report["prompt"] = args.prompt
         negative, = nodes.ConditioningZeroOut().zero_out(positive)
         vae, = nodes.VAELoader().load_vae("flux2-vae_small.safetensors")
         del clip
