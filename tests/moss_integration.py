@@ -25,6 +25,8 @@ def main():
     parser.add_argument("--verify-reference", type=Path, help="Only compare decoded tensors to this checkpoint")
     parser.add_argument("--benchmark-checksums", action="store_true", help="Time CPU reconstruction with and without SHA-256")
     parser.add_argument("--load-only", action="store_true")
+    parser.add_argument("--node-dir", type=Path, default=ROOT, help="Custom-node checkout or installed directory to test")
+    parser.add_argument("--warm-cache", action="store_true", help="Read the checkpoint before timing model load")
     parser.add_argument("--image", type=Path, help="Save the final generated image as PNG")
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--legacy-offload", action="store_true")
@@ -61,7 +63,7 @@ def main():
 
     assert comfy_main.nodes is nodes
     assert torch.cuda.is_available(), "This benchmark requires CUDA"
-    assert asyncio.run(nodes.load_custom_node(str(ROOT))), "PFQC node registration failed"
+    assert asyncio.run(nodes.load_custom_node(str(args.node_dir.resolve()))), "PFQC node registration failed"
     node = nodes.NODE_CLASS_MAPPINGS[NODE_ID]()
     loader = importlib.import_module(type(node).__module__.rsplit(".", 1)[0] + ".loader")
     name = args.checkpoint.name
@@ -82,10 +84,18 @@ def main():
         }
 
     with patch.object(loader, "decode_checkpoint", wraps=loader.decode_checkpoint) as decode:
+        if args.warm_cache:
+            buffer = bytearray(4 * 2**20)
+            with args.checkpoint.open("rb") as stream:
+                while stream.readinto(buffer):
+                    pass
+            del buffer
         torch.cuda.reset_peak_memory_stats()
+        disk_before = psutil.disk_io_counters()
         started = perf_counter()
         model = load_model()
         load_time = perf_counter() - started
+        disk_after = psutil.disk_io_counters()
         assert decode.call_count == int(is_pfqc)
         diffusion = model.model.diffusion_model
         weight = diffusion.layers[0].proj.qkv.weight
@@ -96,6 +106,8 @@ def main():
             "checkpoint": name,
             "bytes": args.checkpoint.stat().st_size,
             "load_s": load_time,
+            "host_disk_read_mib": (disk_after.read_bytes - disk_before.read_bytes) / 2**20
+            if disk_before is not None and disk_after is not None else None,
             "load_memory": memory(),
             "patcher": type(model).__name__,
             "offload_device": str(model.offload_device),

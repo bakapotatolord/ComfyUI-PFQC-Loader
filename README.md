@@ -25,7 +25,9 @@ PFQC can change quantized weight codes and scales during compression. For a load
 
 The loader validates the manifest and streams encoded weights into their final CPU tensor buffers, one tensor at a time. Stored tensors are read through safetensors. ComfyUI receives a complete state dictionary, so leave enough system RAM for the reconstructed weights and the rest of the workflow. The archive is never expanded to a temporary checkpoint during loading.
 
-Routine loading skips SHA-256 comparison. It still validates the archive structure, tensor sizes, and DEFLATE streams. Run `pf-compress verify` for a full integrity check, or pass `verify_checksums=True` to the loader's Python `decode_checkpoint` function. Corruption that preserves the archive structure and decoded sizes can pass a routine load.
+Routine loading verifies every tensor's SHA-256 and checks archive structure, tensor sizes, and complete DEFLATE streams. Four workers decode independent weights into their final CPU buffers. The native path limits each worker to one compressed input below 64 MiB, for up to 256 MiB of compressed buffers in flight. Larger weights stream through zlib serially.
+
+The bundle includes the official libdeflate **1.26 Windows x86-64** build and license. Windows x64 Python uses the bundled DLL when its digest matches. A missing or unsupported DLL selects zlib. Windows 10 or later can use CNG for SHA-256, with `hashlib` available on all supported platforms. The node loads its native libraries locally. [Upstream release and asset digest](https://github.com/ebiggers/libdeflate/releases/expanded_assets/v1.26)
 
 Decoding happens when the model object is created. Denoising, LoRA patching, and offloading use ComfyUI's native model and patcher. If ComfyUI needs a fresh patcher, the reload recipe opens and decodes the archive again.
 
@@ -47,4 +49,4 @@ Run `python -m unittest discover -s tests` with PyTorch and the pinned compresso
 
 ## Updating the bundled decoder
 
-The bundle comes from `potatoforge-quant-compress` commit `68f2e718b3a6f8a74f4f2e1f70cf80efc011b71e`. Make decoder changes there, then copy `decoder.py`, `formats.py`, and `safetensors_io.py` from its `src/pf_quant_compress` directory into `_pfqc_decoder` and update the pin. The unit tests check that the copies match the canonical source.
+The bundle comes from `potatoforge-quant-compress` commit `86a1c2465b0b0d2bf52960049a52d0d4533477cc`. Make decoder changes there, then copy `decoder.py`, `formats.py`, `safetensors_io.py`, `native.py`, and `_vendor/libdeflate-win-x64` from its `src/pf_quant_compress` directory into `_pfqc_decoder` and update the pin. The unit tests check that the copies match the canonical source.

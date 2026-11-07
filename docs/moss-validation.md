@@ -6,7 +6,7 @@ The compressor writes schema 1 to the safetensors metadata key `potatoforge_quan
 
 The physical tensor keys match the original names. Encoded weights store a raw DEFLATE stream as a U8 vector. The decoder restores that stream as a row-major signed INT8 matrix. Stored tensors keep their safetensors dtype and shape. These include FP32 row scales, U8 `.comfy_quant` markers with ConvRot settings, higher-precision tensors, and unsupported families carried through by the compressor. Where compression fits a weight and scale pair, the archive stores the final codes and final FP32 scales.
 
-The loader bundles the compressor's `open_archive`, `validate_families`, and `chunks` APIs. The shared decoder validates the manifest, physical tensor references, quantization families, bounded streams, and decoded sizes. Stored tensors are mapped by safetensors. SHA-256 comparison is optional in the decoder and disabled by default in ComfyUI. The original BF16 model and external compression settings are unnecessary.
+The loader bundles the compressor's archive reader. The shared decoder validates the manifest, physical tensor references, quantization families, bounded streams, and decoded sizes. Stored tensors are mapped by safetensors. ComfyUI verifies SHA-256 by default. The original BF16 model and external compression settings are unnecessary.
 
 ComfyUI 0.43.0 accepts the completed dictionary through `comfy.sd.load_diffusion_model_state_dict(sd, model_options={}, metadata=None, disable_dynamic=False)`. The loader passes the original metadata and registers the same style of `cached_patcher_init` factory as the built-in loader. Encoded tensors occupy RAM after reconstruction. Ordinary checkpoints can keep their INT8 weights file-backed and use ComfyUI's fast-disk path. The PFQC model still uses ComfyUI's native CPU/VRAM placement and dynamic offloading.
 
@@ -64,7 +64,7 @@ Both paths loaded native `TensorWiseINT8Layout` with ConvRot group size 256 and 
 
 Direct PFQC averaged 16.00 s warm, compared with 14.67 s for the standalone reconstruction and 16.30 s for the original. The two standard loads used ComfyUI's fast-disk policy, while direct PFQC used its RAM offload policy. The fast-disk reference also kept about 350 MiB more model weights resident in VRAM during its warm runs than direct PFQC. With `--disable-fast-disk`, the standalone reference took 17.47 and 15.15 s warm and kept the same image hashes. Direct PFQC fell within the range of the standard-loader runs. The comparison shows sensitivity to ComfyUI's offload policy and GPU residency, with identical CUDA INT8 dispatch and zero decoder calls during sampling.
 
-## Effect of skipping SHA-256 during reconstruction
+## Historical checksum comparison with the serial decoder
 
 Both modes reconstructed all 757 tensors from the same 4.61 GiB MOSS archive. The benchmark used portable ComfyUI's Python, the serial decoder, and normal Windows file caching. It alternated the mode order across two pairs in one process. The timer covers CPU state-dict reconstruction. Stored tensors stay memory-mapped, so some page reads can move to later use when SHA-256 is skipped.
 
@@ -78,3 +78,25 @@ Skipping SHA-256 reduced reconstruction time by **10.43 s (30.9%)** in this comp
 ```powershell
 & $comfyPython -B tests/moss_integration.py $comfyRoot $pfqcArchive --benchmark-checksums --runs 2
 ```
+
+## Verified native decoder benchmark
+
+The three paths use the same installed ComfyUI and MOSS workflow. The serial baseline uses the verified loader from commit `fe7c304`. The optimized loader uses four workers, the bundled libdeflate 1.26 Windows x64 DLL, and Windows CNG SHA-256. The standard loader uses the original INT8 ConvRot checkpoint, whose tensor bytes match this lossless PFQC fixture.
+
+Each cold run used a fresh copy of the model made with `robocopy /J` on the same drive. The copy avoided buffered I/O and the loader received the new path before any pre-read. A separate fresh process pre-read that copy with `--warm-cache` before timing its warm load and three generations. The table reports host-wide disk read deltas as a check on cache residency. [Microsoft Robocopy documentation](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/robocopy)
+
+Load timing runs from the loader call to the return of a usable `MODEL`. Peak RAM is the Windows process working set. The standard loader can map weights and read some pages later, while both PFQC paths reconstruct and verify every tensor during the timed call.
+
+| Measurement | Verified serial PFQC | Verified optimized PFQC | Standard INT8 ConvRot |
+| --- | ---: | ---: | ---: |
+| Cold load to `MODEL` | 36.25 s | 10.29 s | 0.77 s |
+| Warm load to `MODEL` | 36.37 s | 7.88 s | 0.24 s |
+| Cold / warm host disk reads during load | 4,740 / 97 MiB | 4,725 / 0 MiB | 629 / 0 MiB |
+| Cold / warm peak process RAM at load | 7.16 / 7.16 GiB | 7.17 / 7.17 GiB | 2.72 / 2.72 GiB |
+| First generation after warm load | 33.26 s | 31.69 s | 20.05 s |
+| Warmed generations | 14.61 / 14.34 s | 14.17 / 14.56 s | 14.59 / 14.57 s |
+| Peak process RAM through generation | 16.07 GiB | 16.11 GiB | 8.34 GiB |
+
+All nine generations matched in latent and image SHA-256. Both PFQC loaders decoded once across the three generations and decoded again on an explicit reload. Every path used the native CUDA INT8 ConvRot operation.
+
+To reproduce, extract the serial node files from `fe7c304` into a separate directory and pass that directory as `--node-dir` for the serial case. Pass the current checkout for optimized PFQC. For each cold run, point the harness at a new unbuffered copy and pass `--load-only`. For the warm runs, reuse the copy with `--warm-cache --runs 3`. For the standard case, pass the ordinary `.safetensors` file.

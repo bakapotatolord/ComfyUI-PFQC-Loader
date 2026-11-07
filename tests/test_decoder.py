@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -29,10 +30,13 @@ WEIGHT = "linear.weight"
 class BundleTests(unittest.TestCase):
     def test_bundle_matches_canonical_sources(self):
         upstream = Path(canonical_decoder.__file__).parent
-        for filename in ("decoder.py", "formats.py", "safetensors_io.py"):
+        for filename in ("decoder.py", "formats.py", "safetensors_io.py", "native.py"):
             with self.subTest(filename=filename):
                 bundled = ROOT / "_pfqc_decoder" / filename
                 self.assertEqual(bundled.read_text(encoding="utf-8"), (upstream / filename).read_text(encoding="utf-8"))
+        for filename in ("libdeflate.dll", "COPYING.txt"):
+            relative = Path("_vendor/libdeflate-win-x64") / filename
+            self.assertEqual((ROOT / "_pfqc_decoder" / relative).read_bytes(), (upstream / relative).read_bytes())
 
 
 def raw_tensor(tensor):
@@ -90,14 +94,27 @@ class DecoderTests(unittest.TestCase):
                         self.assertEqual(tensor.dtype, reference.dtype)
                         self.assertEqual(raw_tensor(tensor), raw_tensor(reference))
 
-    def test_default_decode_never_calls_sha256(self):
+    def test_explicit_opt_out_never_calls_sha256(self):
         bundled = sys.modules[spec.name + "._pfqc_decoder.decoder"]
         with (
-            patch.object(loader, "sha256", side_effect=AssertionError("hashed a stored tensor")),
+            patch.object(bundled, "sha256_hex", side_effect=AssertionError("hashed a tensor buffer")),
             patch.object(bundled, "sha256", side_effect=AssertionError("hashed a decoded stream")),
         ):
-            tensors, _ = decode_checkpoint(self.archive)
+            tensors, _ = decode_checkpoint(self.archive, verify_checksums=False)
         self.assertIn(WEIGHT, tensors)
+
+    def test_worker_is_joined_after_decode_error(self):
+        bundled = sys.modules[spec.name + "._pfqc_decoder.decoder"]
+        workers = []
+
+        def fail(archive, name, output):
+            workers.append(threading.current_thread())
+            raise ValueError("decode failed")
+
+        with patch.object(bundled.Archive, "decode_into", fail), self.assertRaisesRegex(ValueError, "decode failed"):
+            decode_checkpoint(self.archive)
+        self.assertTrue(workers)
+        self.assertTrue(all(not worker.is_alive() for worker in workers))
 
     def test_missing_pfqc_manifest(self):
         with self.assertRaisesRegex(ValueError, "Missing PFQC compression metadata"):
@@ -140,9 +157,9 @@ class DecoderTests(unittest.TestCase):
                 broken = self.directory / f"{issue}.pfqc.safetensors"
                 broken.write_bytes(len(raw_header).to_bytes(8, "little") + raw_header + edited)
                 if issue == "stored":
-                    decode_checkpoint(broken)
+                    decode_checkpoint(broken, verify_checksums=False)
                     with self.assertRaisesRegex(ValueError, message):
-                        decode_checkpoint(broken, verify_checksums=True)
+                        decode_checkpoint(broken)
                 else:
                     for verify_checksums in (False, True):
                         with self.subTest(verify_checksums=verify_checksums), self.assertRaisesRegex(ValueError, message):
