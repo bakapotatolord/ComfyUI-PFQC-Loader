@@ -6,7 +6,7 @@ The compressor writes schema 1 to the safetensors metadata key `potatoforge_quan
 
 The physical tensor keys match the original names. Encoded weights store a raw DEFLATE stream as a U8 vector. The decoder restores that stream as a row-major signed INT8 matrix. Stored tensors keep their safetensors dtype and shape. These include FP32 row scales, U8 `.comfy_quant` markers with ConvRot settings, higher-precision tensors, and unsupported families carried through by the compressor. Where compression fits a weight and scale pair, the archive stores the final codes and final FP32 scales.
 
-The loader uses the compressor's existing `open_archive`, `validate_families`, and `chunks` APIs. The shared decoder validates the manifest, physical tensor references, quantization families, bounded streams, decoded sizes, and hashes. Stored tensors are mapped by safetensors and checked against the recorded hashes. The original BF16 model and external compression settings are unnecessary.
+The loader bundles the compressor's `open_archive`, `validate_families`, and `chunks` APIs. The shared decoder validates the manifest, physical tensor references, quantization families, bounded streams, decoded sizes, and hashes. Stored tensors are mapped by safetensors and checked against the recorded hashes. The original BF16 model and external compression settings are unnecessary.
 
 ComfyUI 0.43.0 accepts the completed dictionary through `comfy.sd.load_diffusion_model_state_dict(sd, model_options={}, metadata=None, disable_dynamic=False)`. The loader passes the original metadata and registers the same style of `cached_patcher_init` factory as the built-in loader. Encoded tensors occupy RAM after reconstruction. Ordinary checkpoints can keep their INT8 weights file-backed and use ComfyUI's fast-disk path. The PFQC model still uses ComfyUI's native CPU/VRAM placement and dynamic offloading.
 
@@ -23,12 +23,12 @@ python -B -m pf_quant_compress.cli compress $original --target-bpw 8 --max-error
 python -B -m pf_quant_compress.cli decompress .fixtures/moss_image_sft_int8_convrot.pfqc.safetensors --output .fixtures/moss_image_sft_int8_convrot_restored.safetensors --report .fixtures/decompress.json
 ```
 
-Run the harness once per checkpoint with ComfyUI's Python, passing the same installed ComfyUI root to each run. Pass `--compressor-src $compressorSrc` if using the compressor from source. To compare all state-dict bytes and metadata, run the archive again with `--verify-reference .fixtures/moss_image_sft_int8_convrot_restored.safetensors`.
+Run the harness once per checkpoint with ComfyUI's Python, passing the same installed ComfyUI root to each run. To compare all state-dict bytes and metadata, run the archive again with `--verify-reference .fixtures/moss_image_sft_int8_convrot_restored.safetensors`.
 
 ```powershell
-& $comfyPython -B tests/moss_integration.py $comfyRoot $original --compressor-src $compressorSrc
-& $comfyPython -B tests/moss_integration.py $comfyRoot .fixtures/moss_image_sft_int8_convrot_restored.safetensors --compressor-src $compressorSrc --image .fixtures/reference.png
-& $comfyPython -B tests/moss_integration.py $comfyRoot .fixtures/moss_image_sft_int8_convrot.pfqc.safetensors --compressor-src $compressorSrc --image .fixtures/pfqc.png
+& $comfyPython -B tests/moss_integration.py $comfyRoot $original
+& $comfyPython -B tests/moss_integration.py $comfyRoot .fixtures/moss_image_sft_int8_convrot_restored.safetensors --image .fixtures/reference.png
+& $comfyPython -B tests/moss_integration.py $comfyRoot .fixtures/moss_image_sft_int8_convrot.pfqc.safetensors --image .fixtures/pfqc.png
 ```
 
 The harness uses the local MOSS workflow's Qwen 3.5 4B INT8 ConvRot encoder, 4B-to-9B adapter, Flux 2 small VAE, and MOSS four-step speed LoRA at strength 1. It disables the workflow's stylistic LoRAs and fixes resolution to 512 × 768, seed to 433126007329043, and sampling to four Euler steps with the simple scheduler, CFG 1, and denoise 1 for all paths. Each run uses the same prompt and seeded noise. Generation timing starts with prepared conditioning and includes VAE decode. The harness records two warmed runs after the first generation and emits latent and image hashes for comparison.
@@ -57,6 +57,8 @@ Model-load timings start in a fresh ComfyUI process. Windows filesystem caches w
 RAM figures use peak Windows process working set. VRAM figures use 250 ms `nvidia-smi` samples for the entire GPU, including the desktop. PyTorch reported the same 768 MiB peak allocator usage during generation in all three runs. ComfyUI's dynamic allocations also contribute to the device-level samples. Sampler progress intervals are host-side measurements between progress callbacks after the first step. Sampler totals synchronize CUDA before recording the end time.
 
 All 757 reconstructed tensors matched the standalone reference in name, shape, dtype, and raw bytes, and their checkpoint metadata matched. The two paths produced identical latent and image hashes in all three runs. Their saved PNG files have SHA-256 `883aa3fc81f818cfc7a9843061e6d2c1e85a8492ca3c060e4c43c4f4c114b39f`.
+
+The bundled decoder was also tested from the installed custom-node folder. It loaded the full MOSS archive as native INT8 ConvRot in portable ComfyUI with the compressor package absent.
 
 Both paths loaded native `TensorWiseINT8Layout` with ConvRot group size 256 and dispatched `int8_linear` through `comfy_kitchen.backends.cuda`. The model-only speed LoRA cloned and patched the native model. ComfyUI kept part of the model in VRAM and offloaded the rest to CPU. The direct path decoded once across all three generations and once more when the reload factory created a fresh model after unload.
 

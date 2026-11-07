@@ -5,18 +5,11 @@ from time import perf_counter
 from safetensors import SafetensorError, safe_open
 import torch
 
+from ._pfqc_decoder.decoder import open_archive
+
 
 def decode_checkpoint(path):
     """Reconstruct a PFQC v1 archive as CPU tensors and original metadata."""
-    try:
-        from pf_quant_compress.archive import open_archive
-    except ModuleNotFoundError as error:
-        if error.name != "pf_quant_compress":
-            raise
-        raise RuntimeError(
-            "Install potatoforge-quant-compress 0.1.0 in ComfyUI's Python environment."
-        ) from error
-
     with open_archive(path) as archive, safe_open(path, framework="pt", device="cpu") as stored:
         archive.validate_families()
         state_dict = {}

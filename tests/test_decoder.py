@@ -1,3 +1,4 @@
+from importlib.util import module_from_spec, spec_from_file_location
 import json
 from pathlib import Path
 import sys
@@ -5,6 +6,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 import numpy as np
+from pf_quant_compress import decoder as canonical_decoder
 from pf_quant_compress.archive import METADATA_KEY, open_archive
 from pf_quant_compress.cli import main as pf_compress
 from safetensors import safe_open
@@ -13,11 +15,23 @@ import torch
 
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
-from loader import decode_checkpoint
+spec = spec_from_file_location("pfqc_decoder_test", ROOT / "loader.py", submodule_search_locations=[str(ROOT)])
+loader = module_from_spec(spec)
+sys.modules[spec.name] = loader
+spec.loader.exec_module(loader)
+decode_checkpoint = loader.decode_checkpoint
 
 
 WEIGHT = "linear.weight"
+
+
+class BundleTests(unittest.TestCase):
+    def test_bundle_matches_canonical_sources(self):
+        upstream = Path(canonical_decoder.__file__).parent
+        for filename in ("decoder.py", "formats.py", "safetensors_io.py"):
+            with self.subTest(filename=filename):
+                bundled = ROOT / "_pfqc_decoder" / filename
+                self.assertEqual(bundled.read_text(encoding="utf-8"), (upstream / filename).read_text(encoding="utf-8"))
 
 
 def raw_tensor(tensor):

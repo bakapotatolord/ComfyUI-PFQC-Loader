@@ -4,22 +4,14 @@
 
 ## Compatibility
 
-The loader supports PFQC schema **1**, written by `potatoforge-quant-compress` **0.1.0**. It uses the compressor's decoder for raw DEFLATE INT8 ConvRot weights and passes stored tensors through with their original bytes, including FP32 row scales, `.comfy_quant` markers, and higher-precision tensors. ComfyUI determines whether it can execute the resulting model and quantization formats. The primary model is MOSS Image SFT INT8 ConvRot.
+The loader supports PFQC schema **1**, written by `potatoforge-quant-compress` **0.1.0**. It bundles the compressor's decoder for raw DEFLATE INT8 ConvRot weights and passes stored tensors through with their original bytes, including FP32 row scales, `.comfy_quant` markers, and higher-precision tensors. ComfyUI determines whether it can execute the resulting model and quantization formats. The primary model is MOSS Image SFT INT8 ConvRot.
 
 The loader uses the native state-dictionary loading and patcher APIs in ComfyUI 0.43.0. Use a ComfyUI build with native support for your checkpoint's quantization and model architecture.
 
 ## Install
 
 1. Put this repository in `ComfyUI/custom_nodes/ComfyUI-PFQC-Loader`.
-2. Install `potatoforge-quant-compress` from a source checkout of **v0.1.0** (commit `a560599abcfd7a54e83aaa33fa9c2c3a383cd810`) into the Python environment that runs ComfyUI. The decoder requires Python 3.11 or later, NumPy 1.26 or later, and safetensors 0.8.0 or later. PyTorch comes from ComfyUI.
-
-   ```sh
-   python -m pip install "/path/to/potatoforge-quant-compress"
-   ```
-
-   For Windows portable, use `python_embeded\python.exe` from the portable root in place of `python`. If the prerequisites and setuptools are already installed, use `--no-deps --no-build-isolation` to install from the local checkout offline.
-
-3. Restart ComfyUI. Decoding itself runs offline and needs only the archive.
+2. Restart ComfyUI. The decoder ships with the node and runs offline. It uses ComfyUI's Python 3.11 or later, NumPy 1.26 or later, safetensors 0.8.0 or later, and PyTorch.
 
 ## Use with MOSS Image SFT
 
@@ -40,7 +32,6 @@ Decoding happens when the model object is created. Denoising, LoRA patching, and
 | Symptom | Check |
 | --- | --- |
 | Empty model list | Confirm the exact `.pfqc.safetensors` suffix and that the file is in a registered `diffusion_models` directory. |
-| Compressor dependency missing | Install the 0.1.0 compressor in the interpreter ComfyUI uses. |
 | Missing PFQC metadata | Select a PFQC archive. Renaming an ordinary safetensors file does not make it a PFQC archive. |
 | Unsupported schema or codec | Check the archive's writer version. This loader supports schema 1 with `stored` and `deflate` codecs. |
 | Checksum or stream error | Run `pf-compress verify` on the archive to check its integrity. |
@@ -48,6 +39,10 @@ Decoding happens when the model object is created. Denoising, LoRA patching, and
 
 ## Tests
 
-Run `python -m unittest discover -s tests` with the decoder and PyTorch installed. The tests build a small archive with the actual compressor CLI and compare the loaded CPU tensors to its standalone decompressed file.
+Run `python -m unittest discover -s tests` with PyTorch and the pinned compressor source available on `PYTHONPATH`. The tests use the compressor CLI to generate a small archive and compare the bundled decoder's CPU tensors to the standalone decompressed file.
 
 `tests/moss_integration.py` exercises the installed ComfyUI APIs with a complete MOSS checkpoint. Use ComfyUI's Python and see `--help` for the archive/reference comparison, model-loading, and generation options. The generation benchmark uses the local MOSS 4B text encoder and adapter, Flux 2 VAE, and MOSS four-step speed LoRA. [MOSS validation and benchmark](docs/moss-validation.md)
+
+## Updating the bundled decoder
+
+The bundle comes from `potatoforge-quant-compress` commit `fa8107338fbb64712bb8f577bf4cc93dd4220dfd`. Make decoder changes there, then copy `decoder.py`, `formats.py`, and `safetensors_io.py` from its `src/pf_quant_compress` directory into `_pfqc_decoder` and update the pin. The unit tests check that the copies match the canonical source.

@@ -21,7 +21,6 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("comfy", type=Path, help="Installed ComfyUI directory")
     parser.add_argument("checkpoint", type=Path)
-    parser.add_argument("--compressor-src", type=Path, help="Use an uninstalled compressor checkout's src/")
     parser.add_argument("--verify-reference", type=Path, help="Only compare decoded tensors to this checkpoint")
     parser.add_argument("--load-only", action="store_true")
     parser.add_argument("--image", type=Path, help="Save the final generated image as PNG")
@@ -33,8 +32,6 @@ def main():
         parser.error("--runs must include one warmup and at least one warmed run")
     args.comfy = args.comfy.resolve()
     args.checkpoint = args.checkpoint.resolve()
-    if args.compressor_src:
-        sys.path.insert(0, str(args.compressor_src.resolve()))
     if args.verify_reference:
         verify_reference(args.checkpoint, args.verify_reference)
         return
@@ -184,12 +181,16 @@ def main():
 
 
 def verify_reference(path, reference):
-    sys.path.insert(0, str(ROOT))
-    from loader import decode_checkpoint
     from safetensors import safe_open
     import torch
 
-    actual, metadata = decode_checkpoint(path)
+    spec = importlib.util.spec_from_file_location(
+        "pfqc_reference_check", ROOT / "loader.py", submodule_search_locations=[str(ROOT)],
+    )
+    loader = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = loader
+    spec.loader.exec_module(loader)
+    actual, metadata = loader.decode_checkpoint(path)
     with safe_open(reference, framework="pt", device="cpu") as expected:
         assert metadata == expected.metadata()
         assert set(actual) == set(expected.keys())
