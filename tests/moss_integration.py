@@ -46,7 +46,10 @@ def main():
         return
 
     sys.path.insert(0, str(args.comfy))
-    sys.argv = ["comfy", "--disable-all-custom-nodes", "--offline", "--deterministic"]
+    sys.argv = [
+        "comfy", "--disable-all-custom-nodes", "--offline", "--deterministic",
+        "--disable-assets", "--database-url", "sqlite:///:memory:",
+    ]
     os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     if args.legacy_offload:
         sys.argv.append("--disable-dynamic-vram")
