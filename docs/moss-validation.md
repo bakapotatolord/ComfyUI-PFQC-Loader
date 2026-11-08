@@ -100,3 +100,28 @@ Load timing runs from the loader call to the return of a usable `MODEL`. Peak RA
 All nine generations matched in latent and image SHA-256. Both PFQC loaders decoded once across the three generations and decoded again on an explicit reload. Every path used the native CUDA INT8 ConvRot operation.
 
 To reproduce, extract the serial node files from `fe7c304` into a separate directory and pass that directory as `--node-dir` for the serial case. Pass the current checkout for optimized PFQC. For each cold run, point the harness at a new unbuffered copy and pass `--load-only`. For the warm runs, reuse the copy with `--warm-cache --runs 3`. For the standard case, pass the ordinary `.safetensors` file.
+
+## Windows read-only mapping benchmark
+
+Both paths used the same 2,957,407,748-byte MOSS v2 PFQC archive, the first-completed queue with four workers, and full SHA-256 verification. The control loaded stored tensors through safetensors. The new path used ComfyUI's read-only mapping and kept PFQC's CPU-to-device staging policy. Each path ran four interleaved fresh processes with the archive pre-read, the same speed LoRA, and two generations per process.
+
+| Median measurement | Previous PFQC | Read-only PFQC |
+| --- | ---: | ---: |
+| Load to usable `MODEL` | 5.49 s | 4.75 s |
+| First completed step on first generation | 18.30 s | 17.73 s |
+| Warmed generation | 16.21 s | 15.42 s |
+| Peak working set at load | 7.16 GiB | 7.16 GiB |
+| Peak private working set at load | 6.37 GiB | 6.37 GiB |
+| Peak and final private commit at load | 12.11 GiB | 9.35 GiB |
+| System commit at load return | 36.23 GiB | 33.16 GiB |
+| System commit increase during load | 10.21 GiB | 7.40 GiB |
+| Minimum available physical RAM during load | 10.55 GiB | 10.85 GiB |
+| Drop in available physical RAM during load | 6.42 GiB | 6.39 GiB |
+| Private working set after warmed generation | 14.74 GiB | 14.70 GiB |
+| Private commit after warmed generation | 24.59 GiB | 21.80 GiB |
+| System commit after warmed generation | 48.46 GiB | 45.45 GiB |
+| Available physical RAM after warmed generation | 2.28 GiB | 2.48 GiB |
+
+The mapped path used 2.77 GiB less peak private commit at load and 2.80 GiB less private commit after generation. The reconstructed INT8 weights still require private CPU backing. Host disk activity varied despite the pre-read, and the first-step timing difference changed direction across pairs. All 16 generations matched in latent and image SHA-256 and used the same native CUDA INT8 dispatch. The mapping released after model destruction and after a separate reload.
+
+Use `--warm-cache --windows-memory --runs 2 --require-read-only` with the harness for the mapped run. For the control, pass the previous queue-only node directory via `--node-dir` and omit `--require-read-only`. The process peak counters come from Windows. The private working set peak and system memory extrema are sampled during loading.

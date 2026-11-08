@@ -2,6 +2,8 @@
 
 import argparse
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext
 import gc
 from hashlib import sha256
 import importlib
@@ -10,13 +12,104 @@ import os
 from pathlib import Path
 from statistics import median
 import sys
+from threading import Event
 from time import perf_counter
 from unittest.mock import patch
+from weakref import ref
 
 
 ROOT = Path(__file__).resolve().parents[1]
 NODE_ID = "LoadDiffusionModelPFQC"
 DEFAULT_PROMPT = "a latina boxer woman has large eyes and wide smile, jumping"
+
+
+def windows_memory_reader():
+    import ctypes as ct
+    from ctypes import wintypes as wt
+
+    class ProcessMemoryCountersEx2(ct.Structure):
+        _fields_ = [
+            ("cb", wt.DWORD), ("PageFaultCount", wt.DWORD),
+            ("PeakWorkingSetSize", ct.c_size_t), ("WorkingSetSize", ct.c_size_t),
+            ("QuotaPeakPagedPoolUsage", ct.c_size_t), ("QuotaPagedPoolUsage", ct.c_size_t),
+            ("QuotaPeakNonPagedPoolUsage", ct.c_size_t), ("QuotaNonPagedPoolUsage", ct.c_size_t),
+            ("PagefileUsage", ct.c_size_t), ("PeakPagefileUsage", ct.c_size_t),
+            ("PrivateUsage", ct.c_size_t), ("PrivateWorkingSetSize", ct.c_size_t),
+            ("SharedCommitUsage", ct.c_ulonglong),
+        ]
+
+    class PerformanceInformation(ct.Structure):
+        _fields_ = [
+            ("cb", wt.DWORD), ("CommitTotal", ct.c_size_t), ("CommitLimit", ct.c_size_t),
+            ("CommitPeak", ct.c_size_t), ("PhysicalTotal", ct.c_size_t), ("PhysicalAvailable", ct.c_size_t),
+            ("SystemCache", ct.c_size_t), ("KernelTotal", ct.c_size_t), ("KernelPaged", ct.c_size_t),
+            ("KernelNonpaged", ct.c_size_t), ("PageSize", ct.c_size_t),
+            ("HandleCount", wt.DWORD), ("ProcessCount", wt.DWORD), ("ThreadCount", wt.DWORD),
+        ]
+
+    kernel32 = ct.WinDLL("kernel32.dll", use_last_error=True, winmode=0x800)
+    current_process = kernel32.GetCurrentProcess
+    current_process.argtypes = []
+    current_process.restype = wt.HANDLE
+    handle = current_process()
+    process_info = kernel32.K32GetProcessMemoryInfo
+    process_info.argtypes = [wt.HANDLE, ct.POINTER(ProcessMemoryCountersEx2), wt.DWORD]
+    process_info.restype = wt.BOOL
+    system_info = kernel32.K32GetPerformanceInfo
+    system_info.argtypes = [ct.POINTER(PerformanceInformation), wt.DWORD]
+    system_info.restype = wt.BOOL
+
+    def snapshot():
+        process = ProcessMemoryCountersEx2(cb=ct.sizeof(ProcessMemoryCountersEx2))
+        system = PerformanceInformation(cb=ct.sizeof(PerformanceInformation))
+        if not process_info(handle, ct.byref(process), process.cb):
+            raise ct.WinError(ct.get_last_error())
+        if not system_info(ct.byref(system), system.cb):
+            raise ct.WinError(ct.get_last_error())
+        return {
+            "working_set_mib": process.WorkingSetSize / 2**20,
+            "peak_working_set_mib": process.PeakWorkingSetSize / 2**20,
+            "private_working_set_mib": process.PrivateWorkingSetSize / 2**20,
+            "private_commit_mib": process.PrivateUsage / 2**20,
+            "peak_private_commit_mib": process.PeakPagefileUsage / 2**20,
+            "system_commit_mib": system.CommitTotal * system.PageSize / 2**20,
+            "available_physical_mib": system.PhysicalAvailable * system.PageSize / 2**20,
+        }
+
+    return snapshot
+
+
+@contextmanager
+def sample_windows_load_memory(snapshot):
+    """Record Windows process high-water marks and load-window memory samples."""
+    stop = Event()
+    interval = 0.02
+    samples = []
+
+    def sample():
+        while not stop.wait(interval):
+            samples.append(snapshot())
+
+    report = {}
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(sample)
+        try:
+            before = snapshot()
+            yield report
+        finally:
+            stop.set()
+        after = snapshot()
+        future.result()
+    samples = [before, *samples, after]
+    report.update(
+        before=before,
+        after=after,
+        sample_count=len(samples),
+        requested_sample_interval_ms=interval * 1000,
+        sampled_peak_private_working_set_mib=max(item["private_working_set_mib"] for item in samples),
+        sampled_peak_system_commit_mib=max(item["system_commit_mib"] for item in samples),
+        sampled_min_available_physical_mib=min(item["available_physical_mib"] for item in samples),
+    )
 
 
 def main():
@@ -26,6 +119,8 @@ def main():
     parser.add_argument("--verify-reference", type=Path, help="Only compare decoded tensors to this checkpoint")
     parser.add_argument("--benchmark-checksums", action="store_true", help="Time CPU reconstruction with and without SHA-256")
     parser.add_argument("--load-only", action="store_true")
+    parser.add_argument("--windows-memory", action="store_true", help="Sample Windows memory counters during model loading")
+    parser.add_argument("--require-read-only", action="store_true", help="Check PFQC's mapping, patch guard, and cleanup")
     parser.add_argument("--node-dir", type=Path, default=ROOT, help="Custom-node checkout or installed directory to test")
     parser.add_argument("--warm-cache", action="store_true", help="Read the checkpoint before timing model load")
     parser.add_argument("--image", type=Path, help="Save the final generated image as PNG")
@@ -36,6 +131,8 @@ def main():
     args = parser.parse_args()
     if args.runs < 2:
         parser.error("--runs must include one warmup and at least one warmed run")
+    if args.windows_memory and (sys.platform != "win32" or args.verify_reference or args.benchmark_checksums):
+        parser.error("--windows-memory requires a Windows model load")
     args.comfy = args.comfy.resolve()
     args.checkpoint = args.checkpoint.resolve()
     if args.benchmark_checksums:
@@ -76,6 +173,7 @@ def main():
     is_pfqc = name.endswith(".pfqc.safetensors")
     assert (name in node.INPUT_TYPES()["required"]["model_name"][0]) == is_pfqc
     process = psutil.Process()
+    windows_snapshot = windows_memory_reader() if args.windows_memory else None
 
     def load_model():
         return node.load(name)[0] if is_pfqc else nodes.UNETLoader().load_unet(name, "default")[0]
@@ -97,9 +195,11 @@ def main():
             del buffer
         torch.cuda.reset_peak_memory_stats()
         disk_before = psutil.disk_io_counters()
-        started = perf_counter()
-        model = load_model()
-        load_time = perf_counter() - started
+        memory_sampler = sample_windows_load_memory(windows_snapshot) if windows_snapshot else nullcontext()
+        with memory_sampler as windows_memory:
+            started = perf_counter()
+            model = load_model()
+            load_time = perf_counter() - started
         disk_after = psutil.disk_io_counters()
         assert decode.call_count == int(is_pfqc)
         diffusion = model.model.diffusion_model
@@ -120,7 +220,10 @@ def main():
             "layout": weight.layout_cls.__name__,
             "convrot_group_size": weight._params.convrot_groupsize,
         }
+        if windows_memory is not None:
+            report["windows_memory"] = windows_memory
         print(json.dumps(report), flush=True)
+        mapped_storage = check_read_only(model) if args.require_read_only else None
         if args.load_only:
             return
         del diffusion, weight
@@ -173,6 +276,7 @@ def main():
             run_report = {
                 "run": run + 1,
                 "sample_s": sample_end - started,
+                "first_step_s": steps[0] - started,
                 "post_first_step_s": (steps[-1] - steps[0]) / (len(steps) - 1),
                 "generation_s": perf_counter() - started,
                 "image_sha256": sha256(pixels).hexdigest(),
@@ -180,6 +284,8 @@ def main():
                 "model_loaded_mib": patched.loaded_size() / 2**20,
                 **memory(),
             }
+            if windows_snapshot:
+                run_report["windows_memory_after_generation"] = windows_snapshot()
             report["runs"].append(run_report)
             print(json.dumps(run_report), flush=True)
 
@@ -194,13 +300,46 @@ def main():
         assert all(loaded.clone_base_uuid != model.clone_base_uuid for loaded in mm.loaded_models())
         if is_pfqc:
             factory, factory_args = model.cached_patcher_init
+            if mapped_storage is not None:
+                assert mapped_storage() is not None
+                mm.reset_cast_buffers()
             del patched, model
             gc.collect()
+            if mapped_storage is not None:
+                assert mapped_storage() is None, "PFQC mapping survived model destruction"
+                report["mapping_released"] = True
             started = perf_counter()
             reloaded = factory(*factory_args)
             report["reload_s"] = perf_counter() - started
             assert decode.call_count == 2 and reloaded.model.diffusion_model.layers[0].proj.qkv.weight._params.convrot
+            if mapped_storage is not None:
+                reloaded_mapping = check_read_only(reloaded)
+                del reloaded
+                gc.collect()
+                assert reloaded_mapping() is None, "Reloaded PFQC mapping survived model destruction"
+                report["reload_mapping_released"] = True
         print(json.dumps(report, indent=2), flush=True)
+
+
+def check_read_only(model):
+    assert type(model).__name__ == "ReadOnlyPatcher"
+    assert not model.fast_disk and not model.model.comfy_writable
+    for key, weight in model.model.named_parameters():
+        storage = getattr(weight, "_qdata", weight).untyped_storage()
+        mapped = getattr(storage, "_comfy_tensor_mmap_refs", None)
+        if mapped is None:
+            continue
+        assert not hasattr(storage, "_comfy_tensor_file_slice")
+        with patch.object(type(model).__bases__[0], "patch_weight_to_device",
+                          side_effect=AssertionError("An in-place patch reached the native patcher")):
+            try:
+                model.patch_weight_to_device(key, inplace_update=True, force_cast=True)
+            except RuntimeError as error:
+                assert "In-place patch requested on read-only PFQC storage" in str(error)
+            else:
+                raise AssertionError("In-place patch on mapped storage was not blocked")
+        return ref(mapped[0])
+    raise AssertionError("No retained read-only parameter found")
 
 
 def import_decoder():

@@ -25,7 +25,11 @@ PFQC can change quantized weight codes and scales during compression. For a load
 
 ## Loading and memory
 
-The loader validates the manifest and streams encoded weights into their final CPU tensor buffers, one tensor at a time. Stored tensors are read through safetensors. ComfyUI receives a complete state dictionary, so leave enough system RAM for the reconstructed weights and the rest of the workflow. The archive is never expanded to a temporary checkpoint during loading.
+The loader validates the manifest and decodes encoded weights into their final CPU tensor buffers. ComfyUI receives a complete state dictionary, so leave enough system RAM for the reconstructed weights and the rest of the workflow. The archive is never expanded to a temporary checkpoint during loading.
+
+On Windows with supported ComfyUI DynamicVRAM, unchanged tensors use ComfyUI's read-only file mapping. Tensor storage keeps the mapping alive. This avoids a copy-on-write commit charge for the archive. MOSS's peak physical working set was essentially unchanged because the reconstructed INT8 weights still require private CPU backing. The loader uses the safetensors path when read-only mapping is unavailable or ComfyUI requests a legacy patcher.
+
+The read-only patcher supports normal ComfyUI LoRA loading and blocks explicit in-place patch requests on mapped parameters. Third-party nodes that modify tensor storage directly bypass this guard and must use a writable loader path. A legacy ComfyUI session with `--disable-dynamic-vram` uses the safetensors fallback.
 
 Routine loading verifies every tensor's SHA-256 and checks archive structure, tensor sizes, and complete DEFLATE streams. Four workers decode independent weights into their final CPU buffers. The native path limits each worker to one compressed input below 64 MiB, for up to 256 MiB of compressed buffers in flight. Larger weights stream through zlib serially.
 
