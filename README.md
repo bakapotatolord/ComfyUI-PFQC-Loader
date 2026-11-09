@@ -4,9 +4,7 @@
 
 ## Compatibility
 
-The loader supports PFQC schemas **1 and 2**. It bundles the compressor's decoder for raw DEFLATE INT8 ConvRot weights and passes stored tensors through with their original bytes, including FP32 row scales, `.comfy_quant` markers, and higher-precision tensors. ComfyUI determines whether it can execute the resulting model and quantization formats. The primary model is MOSS Image SFT INT8 ConvRot.
-
-The compressor writes schema v2 when an experimental fit selects a multiplier above 2×. Update the installed loader and restart ComfyUI before loading v2 archives. This decoder also opens experimental v1 archives created with earlier wide-grid builds.
+The loader supports PFQC format **v1** with Zstandard INT8 ConvRot weights. Stored tensors retain their original bytes, including FP32 scales, `.comfy_quant` markers, and higher-precision tensors. ComfyUI determines whether it can execute the resulting model and quantization formats. Experimental DEFLATE and research archives are not supported.
 
 The loader uses the native state-dictionary loading and patcher APIs in ComfyUI 0.43.0. Use a ComfyUI build with native support for your checkpoint's quantization and model architecture.
 
@@ -31,9 +29,9 @@ On Windows with supported ComfyUI DynamicVRAM, unchanged tensors use ComfyUI's r
 
 The read-only patcher supports normal ComfyUI LoRA loading and blocks explicit in-place patch requests on mapped parameters. Third-party nodes that modify tensor storage directly bypass this guard and must use a writable loader path. A legacy ComfyUI session with `--disable-dynamic-vram` uses the safetensors fallback.
 
-Routine loading verifies every tensor's SHA-256 and checks archive structure, tensor sizes, and complete DEFLATE streams. Four workers decode independent weights into their final CPU buffers. The native path limits each worker to one compressed input below 64 MiB, for up to 256 MiB of compressed buffers in flight. Larger weights stream through zlib serially.
+Routine loading verifies every tensor's SHA-256 and checks archive structure, tensor sizes, and complete Zstandard frames. Four workers decode independent weights directly into their final CPU buffers with bounded compressed input chunks. The decoder limits frame windows to 128 MiB.
 
-The bundle includes the official libdeflate **1.26 Windows x86-64** build and license. Windows x64 Python uses the bundled DLL when its digest matches. A missing or unsupported DLL selects zlib. Windows 10 or later can use CNG for SHA-256, with `hashlib` available on all supported platforms. The node loads its native libraries locally. [Upstream release and asset digest](https://github.com/ebiggers/libdeflate/releases/expanded_assets/v1.26)
+The bundle includes the official [Zstandard 1.5.7 Windows x64 library](https://github.com/facebook/zstd/releases/tag/v1.5.7) and license. The DLL is required and its checksum is verified before loading. Windows CNG accelerates SHA-256 where available; `hashlib` is the fallback.
 
 Decoding happens when the model object is created. Denoising, LoRA patching, and offloading use ComfyUI's native model and patcher. If ComfyUI needs a fresh patcher, the reload recipe opens and decodes the archive again.
 
@@ -43,7 +41,7 @@ Decoding happens when the model object is created. Denoising, LoRA patching, and
 | --- | --- |
 | Empty model list | Confirm the exact `.pfqc.safetensors` suffix and that the file is in a registered `diffusion_models` directory. |
 | Missing PFQC metadata | Select a PFQC archive. Renaming an ordinary safetensors file does not make it a PFQC archive. |
-| Unsupported schema or codec | Check the archive's writer version. This loader supports schemas 1 and 2 with `stored` and `deflate` codecs. |
+| Unsupported schema or codec | Check the archive's writer version. This loader supports format v1 with `stored` and `zstd` records. |
 | Checksum or stream error | Run `pf-compress verify` on the archive to check its integrity. |
 | ComfyUI cannot detect the model | Confirm the archive was made from a diffusion checkpoint supported by your ComfyUI build. |
 
@@ -55,4 +53,4 @@ Run `python -m unittest discover -s tests` with PyTorch and the pinned compresso
 
 ## Updating the bundled decoder
 
-The bundle comes from `potatoforge-quant-compress` commit `985af01454e3a8029ba852cc4fb20c985691482d`. Make decoder changes there, then copy `decoder.py`, `formats.py`, `safetensors_io.py`, `native.py`, and `_vendor/libdeflate-win-x64` from its `src/pf_quant_compress` directory into `_pfqc_decoder` and update the pin. The unit tests check that the copies match the canonical source.
+The compressor repository is the canonical source. Copy `decoder.py`, `formats.py`, `safetensors_io.py`, `native.py`, `zstd.py`, and `_vendor/zstd-win-x64` from its `src/pf_quant_compress` directory into `_pfqc_decoder`. The unit tests check that the copies match.

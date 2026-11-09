@@ -30,12 +30,12 @@ WEIGHT = "linear.weight"
 class BundleTests(unittest.TestCase):
     def test_bundle_matches_canonical_sources(self):
         upstream = Path(canonical_decoder.__file__).parent
-        for filename in ("decoder.py", "formats.py", "safetensors_io.py", "native.py"):
+        for filename in ("decoder.py", "formats.py", "safetensors_io.py", "native.py", "zstd.py"):
             with self.subTest(filename=filename):
                 bundled = ROOT / "_pfqc_decoder" / filename
                 self.assertEqual(bundled.read_text(encoding="utf-8"), (upstream / filename).read_text(encoding="utf-8"))
-        for filename in ("libdeflate.dll", "COPYING.txt"):
-            relative = Path("_vendor/libdeflate-win-x64") / filename
+        for filename in ("libzstd.dll", "LICENSE"):
+            relative = Path("_vendor/zstd-win-x64") / filename
             self.assertEqual((ROOT / "_pfqc_decoder" / relative).read_bytes(), (upstream / relative).read_bytes())
 
 
@@ -70,7 +70,7 @@ class DecoderTests(unittest.TestCase):
         }
         save_file(tensors, cls.source, metadata={"origin": "fixture", "config": '{"test":true}'})
         if pf_compress([
-            "compress", str(cls.source), "--target-bpw", "5.2", "--max-error", "0.003",
+            "compress", str(cls.source), "--target-bpw", "4.8", "--max-error", "0.003",
             "--output", str(cls.archive),
         ]):
             raise RuntimeError("Failed to generate the PFQC test fixture")
@@ -78,7 +78,7 @@ class DecoderTests(unittest.TestCase):
     def test_matches_standalone_decompress_bit_for_bit(self):
         self.assertEqual(pf_compress(["decompress", str(self.archive), "--output", str(self.restored)]), 0)
         with open_archive(self.archive) as archive:
-            self.assertEqual(archive.records[WEIGHT]["codec"], "deflate")
+            self.assertEqual(archive.records[WEIGHT]["codec"], "zstd")
             self.assertEqual(archive.records[WEIGHT]["storage"], "optimized_int8")
 
         for verify_checksums in (False, True):
@@ -107,11 +107,11 @@ class DecoderTests(unittest.TestCase):
         wide = self.directory / "wide.pfqc.safetensors"
         restored = self.directory / "wide-restored.safetensors"
         self.assertEqual(pf_compress([
-            "compress", str(self.source), "--target-bpw", "4.3", "--max-error", "0.015",
+            "compress", str(self.source), "--target-bpw", "3.8", "--max-error", "0.015",
             "--wide-grid", "--output", str(wide),
         ]), 0)
         with open_archive(wide) as archive:
-            self.assertEqual(archive.manifest["schema_version"], 2)
+            self.assertEqual(archive.manifest["schema_version"], 1)
             fit = archive.report()["families"][0]
             self.assertGreater(fit["multiplier"], 2.0)
             self.assertFalse(fit["rate_target_missed"])
@@ -150,7 +150,7 @@ class DecoderTests(unittest.TestCase):
             ("codec", "Unsupported tensor codec"),
             ("tensor", "Missing storage tensor"),
             ("family", "Invalid family linkage"),
-            ("stream", "DEFLATE"),
+            ("stream", "Zstandard"),
             ("stored", "Checksum mismatch"),
         ):
             with self.subTest(issue=issue):

@@ -8,7 +8,6 @@ from safetensors import SafetensorError, safe_open
 import torch
 
 from ._pfqc_decoder.decoder import open_archive
-from ._pfqc_decoder.native import NATIVE_TENSOR_LIMIT
 
 
 DECODE_WORKERS = 4
@@ -58,18 +57,12 @@ def decode_checkpoint(path, *, verify_checksums=True, read_only=False):
                     raw = tensor.reshape(-1).view(torch.uint8).numpy()
                     archive.check_tensor(name, raw)
                     state_dict[name] = tensor
-                elif info.nbytes <= NATIVE_TENSOR_LIMIT:
+                else:
                     if len(pending) == DECODE_WORKERS:
                         completed, _ = wait(pending, return_when=FIRST_COMPLETED)
                         for future in completed:
                             state_dict[pending.pop(future)] = future.result()
                     pending[pool.submit(decode_weight, name, info)] = name
-                else:
-                    # Oversized weights stream through zlib after all smaller jobs finish.
-                    for future, key in pending.items():
-                        state_dict[key] = future.result()
-                    pending.clear()
-                    state_dict[name] = decode_weight(name, info)
             for future, name in pending.items():
                 state_dict[name] = future.result()
         finally:
@@ -97,7 +90,7 @@ def load_diffusion_model(path, *, disable_dynamic=False):
             state_dict, metadata = decode_checkpoint(path)
         else:
             state_dict, metadata = decode_checkpoint(path, read_only=True)
-    except (OSError, SafetensorError, ValueError, RecursionError, OverflowError) as error:
+    except (OSError, SafetensorError, ValueError, RuntimeError, RecursionError, OverflowError) as error:
         raise RuntimeError(f"Cannot decode PFQC archive {path}: {error}") from error
     logging.info("Decoded PFQC archive %s in %.2f s", path, perf_counter() - started)
     has_mapped_tensors = read_only_patcher is not None and any(

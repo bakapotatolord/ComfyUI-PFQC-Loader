@@ -1,3 +1,5 @@
+> Historical DEFLATE loader measurements. These results do not validate the Zstandard v1 loader.
+
 # MOSS INT8 ConvRot validation
 
 ## Archive and native loading
